@@ -62,7 +62,7 @@ func TestBackend_PreparePod_Defaults(t *testing.T) {
 	podGang := &groveschedulerv1alpha1.PodGang{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-pcs-0", Namespace: "default"},
 		Spec: groveschedulerv1alpha1.PodGangSpec{
-			PodGroups: []groveschedulerv1alpha1.PodGroup{{Name: "test-pcs-0-worker"}},
+			PodGroups: []groveschedulerv1alpha1.PodGroup{{Name: "test-pcs-0-worker", MinReplicas: 2}},
 		},
 	}
 	require.NoError(t, cl.Create(context.Background(), pcs))
@@ -125,7 +125,8 @@ func TestBackend_PreparePod_ConfigAndExistingMetadata(t *testing.T) {
 		Spec: groveschedulerv1alpha1.PodGangSpec{
 			PodGroups: []groveschedulerv1alpha1.PodGroup{
 				{
-					Name: "test-pcs-0-worker",
+					Name:        "test-pcs-0-worker",
+					MinReplicas: 7,
 					TopologyConstraint: &groveschedulerv1alpha1.TopologyConstraint{
 						PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Required: &rackKey},
 					},
@@ -187,9 +188,10 @@ func TestBackend_PreparePod_PCSGAndTopology(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "demo-0", Namespace: "default"},
 		Spec: groveschedulerv1alpha1.PodGangSpec{
 			PodGroups: []groveschedulerv1alpha1.PodGroup{
-				{Name: "demo-0-decode-0-leader"},
+				{Name: "demo-0-decode-0-leader", MinReplicas: 1},
 				{
-					Name: "demo-0-decode-0-worker",
+					Name:        "demo-0-decode-0-worker",
+					MinReplicas: 2,
 					TopologyConstraint: &groveschedulerv1alpha1.TopologyConstraint{
 						PackConstraint: &groveschedulerv1alpha1.TopologyPackConstraint{Required: &rackKey},
 					},
@@ -396,6 +398,133 @@ func TestBackend_SyncPodGang_CreatesPrebuiltWorkloadForSimplePCS(t *testing.T) {
 	require.NotNil(t, podSet.TopologyRequest)
 	require.NotNil(t, podSet.TopologyRequest.Required)
 	assert.Equal(t, rackKey, *podSet.TopologyRequest.Required)
+}
+
+// newTestPCSAndPodGang returns a single-clique PodCliqueSet and matching PodGang fixture for the
+// ensureWorkload repair tests: a Workload named after the PodGang, and a PodCliqueSet whose
+// queueNameLabel differs from the "stale-queue" value the repair tests seed onto a pre-existing
+// Workload, so a rebuilt Workload is distinguishable from an untouched one by QueueName alone.
+func newTestPCSAndPodGang() (*grovecorev1alpha1.PodCliqueSet, *groveschedulerv1alpha1.PodGang) {
+	pcs := &grovecorev1alpha1.PodCliqueSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "default",
+			Labels:    map[string]string{queueNameLabel: "grove-poc"},
+		},
+		Spec: grovecorev1alpha1.PodCliqueSetSpec{
+			Template: grovecorev1alpha1.PodCliqueSetTemplateSpec{
+				Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{
+					{Name: "worker", Spec: grovecorev1alpha1.PodCliqueSpec{Replicas: 2}},
+				},
+			},
+		},
+	}
+	podGang := &groveschedulerv1alpha1.PodGang{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-0",
+			Namespace: "default",
+			UID:       "demo-0-uid",
+			Labels:    map[string]string{apicommon.LabelPartOfKey: "demo"},
+		},
+		Spec: groveschedulerv1alpha1.PodGangSpec{
+			PodGroups: []groveschedulerv1alpha1.PodGroup{{Name: "demo-0-worker", MinReplicas: 2}},
+		},
+	}
+	return pcs, podGang
+}
+
+func TestBackend_SyncPodGang_LeavesHealthyWorkloadUntouched(t *testing.T) {
+	pcs, podGang := newTestPCSAndPodGang()
+	cl := testutils.NewTestClientBuilder().WithObjects(pcs, newStandalonePodClique("demo-0-worker", "demo")).Build()
+	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKueue})
+	require.NoError(t, b.Init(nil))
+	staleWorkload := &kueuev1beta2.Workload{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-0", Namespace: "default"},
+		Spec:       kueuev1beta2.WorkloadSpec{QueueName: "stale-queue"},
+	}
+	require.NoError(t, cl.Create(context.Background(), staleWorkload))
+
+	require.NoError(t, b.SyncPodGang(context.Background(), podGang))
+
+	got := &kueuev1beta2.Workload{}
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "demo-0"}, got))
+	assert.Equal(t, kueuev1beta2.LocalQueueName("stale-queue"), got.Spec.QueueName, "a healthy existing Workload must not be rebuilt")
+}
+
+func TestBackend_SyncPodGang_RecreatesFinishedWorkload(t *testing.T) {
+	pcs, podGang := newTestPCSAndPodGang()
+	cl := testutils.NewTestClientBuilder().WithObjects(pcs, newStandalonePodClique("demo-0-worker", "demo")).Build()
+	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKueue})
+	require.NoError(t, b.Init(nil))
+	finishedWorkload := &kueuev1beta2.Workload{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-0", Namespace: "default"},
+		Spec:       kueuev1beta2.WorkloadSpec{QueueName: "stale-queue"},
+		Status: kueuev1beta2.WorkloadStatus{
+			Conditions: []metav1.Condition{
+				{Type: kueuev1beta2.WorkloadFinished, Status: metav1.ConditionTrue, Reason: "Test", Message: "test"},
+			},
+		},
+	}
+	require.NoError(t, cl.Create(context.Background(), finishedWorkload))
+
+	require.NoError(t, b.SyncPodGang(context.Background(), podGang))
+
+	got := &kueuev1beta2.Workload{}
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "demo-0"}, got))
+	assert.Equal(t, kueuev1beta2.LocalQueueName("grove-poc"), got.Spec.QueueName, "a Finished Workload must be deleted and rebuilt")
+	assert.Empty(t, got.Status.Conditions, "the rebuilt Workload must not carry over the old Finished condition")
+}
+
+func TestBackend_SyncPodGang_RecreatesDeactivatedWorkload(t *testing.T) {
+	pcs, podGang := newTestPCSAndPodGang()
+	cl := testutils.NewTestClientBuilder().WithObjects(pcs, newStandalonePodClique("demo-0-worker", "demo")).Build()
+	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKueue})
+	require.NoError(t, b.Init(nil))
+	deactivatedWorkload := &kueuev1beta2.Workload{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-0", Namespace: "default"},
+		Spec:       kueuev1beta2.WorkloadSpec{QueueName: "stale-queue", Active: ptr.To(false)},
+	}
+	require.NoError(t, cl.Create(context.Background(), deactivatedWorkload))
+
+	require.NoError(t, b.SyncPodGang(context.Background(), podGang))
+
+	got := &kueuev1beta2.Workload{}
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "demo-0"}, got))
+	assert.Equal(t, kueuev1beta2.LocalQueueName("grove-poc"), got.Spec.QueueName, "a deactivated Workload must be deleted and rebuilt")
+}
+
+func TestBackend_PreparePod_RecreatesFinishedWorkload(t *testing.T) {
+	pcs, podGang := newTestPCSAndPodGang()
+	pclq := newStandalonePodClique("demo-0-worker", "demo")
+	cl := testutils.NewTestClientBuilder().WithObjects(pcs, podGang, pclq).Build()
+	b := New(cl, cl.Scheme(), record.NewFakeRecorder(10), configv1alpha1.SchedulerProfile{Name: configv1alpha1.SchedulerNameKueue})
+	require.NoError(t, b.Init(nil))
+	finishedWorkload := &kueuev1beta2.Workload{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-0", Namespace: "default"},
+		Spec:       kueuev1beta2.WorkloadSpec{QueueName: "stale-queue"},
+		Status: kueuev1beta2.WorkloadStatus{
+			Conditions: []metav1.Condition{
+				{Type: kueuev1beta2.WorkloadFinished, Status: metav1.ConditionTrue, Reason: "Test", Message: "test"},
+			},
+		},
+	}
+	require.NoError(t, cl.Create(context.Background(), finishedWorkload))
+
+	// A replacement Pod being prepared after Kueue preempted and finished the group.
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "default",
+		Labels: map[string]string{
+			apicommon.LabelPartOfKey: "demo",
+			apicommon.LabelPodClique: "demo-0-worker",
+			apicommon.LabelPodGang:   "demo-0",
+		},
+	}}
+
+	require.NoError(t, b.PreparePod(pod))
+
+	got := &kueuev1beta2.Workload{}
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "demo-0"}, got))
+	assert.Equal(t, kueuev1beta2.LocalQueueName("grove-poc"), got.Spec.QueueName, "preparing a replacement Pod must repair a Finished Workload")
 }
 
 func TestBackend_SyncPodGang_RejectsInvalidMinReplicas(t *testing.T) {

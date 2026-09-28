@@ -32,6 +32,7 @@ import (
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -112,13 +113,33 @@ func (b *schedulerBackend) SyncPodGang(ctx context.Context, podGang *groveschedu
 	if pcsName == "" {
 		return fmt.Errorf("PodGang %s/%s must set label %q", podGang.Namespace, podGang.Name, apicommon.LabelPartOfKey)
 	}
+	return b.ensureWorkload(ctx, podGang, pcsName)
+}
 
-	err := b.client.Get(ctx, client.ObjectKey{Namespace: podGang.Namespace, Name: podGang.Name}, &kueuev1beta2.Workload{})
-	if err == nil {
-		// Kueue Workload podSets are immutable once admitted, so the Workload is only created and not updated in this POC.
-		return nil
-	}
-	if !apierrors.IsNotFound(err) {
+// ensureWorkload ensures a usable prebuilt Kueue Workload exists for podGang, creating it if absent. An
+// existing Workload that is no longer usable (Finished, or deactivated by Kueue) is deleted and rebuilt
+// from scratch instead of repaired in place, since Kueue Workload podSets are immutable once admitted.
+//
+// This is also how Grove recovers from Kueue preempting a Workload: Kueue deletes the admitted Pods,
+// and if it observes zero active Pods before Grove's replacements are created, the Pod-group's
+// retriable-in-group=false annotation causes Kueue to report the group Finished. Once Finished, Kueue
+// never reopens the Workload (see PR #707 review discussion r3987044064). Grove has no watch on Kueue
+// Workloads to notice this independently, so the repair is anchored here: PreparePod calls this for
+// every replacement Pod it prepares, which runs at exactly the point Grove is already recreating Pods
+// for the PodGang.
+func (b *schedulerBackend) ensureWorkload(ctx context.Context, podGang *groveschedulerv1alpha1.PodGang, pcsName string) error {
+	existing := &kueuev1beta2.Workload{}
+	err := b.client.Get(ctx, client.ObjectKey{Namespace: podGang.Namespace, Name: podGang.Name}, existing)
+	switch {
+	case err == nil:
+		if !workloadNeedsReplacement(existing) {
+			return nil
+		}
+		if err := b.client.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete stale prebuilt kueue Workload %s/%s: %w", podGang.Namespace, podGang.Name, err)
+		}
+		log.FromContext(ctx).Info("Deleted stale prebuilt Kueue Workload", "workload", client.ObjectKeyFromObject(existing))
+	case !apierrors.IsNotFound(err):
 		return fmt.Errorf("failed to get prebuilt kueue Workload %s/%s: %w", podGang.Namespace, podGang.Name, err)
 	}
 
@@ -131,10 +152,25 @@ func (b *schedulerBackend) SyncPodGang(ctx context.Context, podGang *groveschedu
 		return err
 	}
 	if err = b.client.Create(ctx, workload); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// A concurrent PreparePod call for another replacement Pod in the same group already
+			// recreated it; that satisfies what this call wanted.
+			log.FromContext(ctx).V(4).Info("Prebuilt Kueue Workload already recreated by a concurrent caller", "workload", client.ObjectKeyFromObject(workload))
+			return nil
+		}
 		return fmt.Errorf("failed to create prebuilt kueue Workload %s/%s: %w", podGang.Namespace, podGang.Name, err)
 	}
 	log.FromContext(ctx).Info("Created prebuilt Kueue Workload", "workload", client.ObjectKeyFromObject(workload))
 	return nil
+}
+
+// workloadNeedsReplacement reports whether wl is permanently unusable and must be deleted and rebuilt.
+// Kueue never transitions a Finished or deactivated Workload back to a usable state.
+func workloadNeedsReplacement(wl *kueuev1beta2.Workload) bool {
+	if apimeta.IsStatusConditionTrue(wl.Status.Conditions, kueuev1beta2.WorkloadFinished) {
+		return true
+	}
+	return wl.Spec.Active != nil && !*wl.Spec.Active
 }
 
 // buildPrebuiltWorkload constructs a prebuilt Kueue Workload from a PodGang, mapping each PodGroup to a Kueue
@@ -265,6 +301,11 @@ func (b *schedulerBackend) PreparePod(pod *corev1.Pod) error {
 	podGang := &groveschedulerv1alpha1.PodGang{}
 	if err := b.client.Get(context.Background(), client.ObjectKey{Namespace: pod.Namespace, Name: podGangName}, podGang); err != nil {
 		return fmt.Errorf("failed to get PodGang %s/%s when preparing Pod: %w", pod.Namespace, podGangName, err)
+	}
+	// Repair a Workload that Kueue permanently finished or deactivated out from under this PodGang
+	// (see ensureWorkload) before preparing this replacement Pod.
+	if err := b.ensureWorkload(context.Background(), podGang, pcsName); err != nil {
+		return fmt.Errorf("failed to ensure prebuilt kueue Workload for PodGang %s/%s when preparing Pod: %w", pod.Namespace, podGangName, err)
 	}
 	queueName, err := queueNameForPodCliqueSet(pcs)
 	if err != nil {

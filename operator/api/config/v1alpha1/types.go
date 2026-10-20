@@ -114,6 +114,11 @@ type KueueSchedulerConfiguration struct {
 	// UnderlyingSchedulerName is the schedulerName used after Kueue admits the Pods.
 	// +optional
 	UnderlyingSchedulerName string `json:"underlyingSchedulerName,omitempty"`
+	// WASMode (POC) also builds each PodGang's Workload-Aware Scheduling hierarchy: empty disables it,
+	// "GangOnly" drops the hierarchy's topology constraints, "Full" keeps them, and "WASTopology" keeps
+	// them while leaving them out of the Kueue Workload.
+	// +optional
+	WASMode string `json:"wasMode,omitempty"`
 }
 
 // KubeSchedulerConfig holds the configuration for the default scheduler.

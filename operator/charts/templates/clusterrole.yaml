@@ -162,7 +162,7 @@ rules:
   - delete
 {{- end }}
 {{- range .Values.config.scheduler.profiles }}
-{{- if and (eq .name "default-scheduler") (dig "gangScheduling" false (.config | default dict)) }}
+{{- if or (and (eq .name "default-scheduler") (dig "gangScheduling" false (.config | default dict))) (and (eq .name "kueue") (dig "wasMode" "" (.config | default dict))) }}
 - apiGroups:
   - scheduling.k8s.io
   resources:

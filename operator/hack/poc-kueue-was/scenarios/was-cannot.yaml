@@ -1,0 +1,30 @@
+# Run with wasMode WASTopology. 6 pods that must share a rack, but no rack has 6 slots. Kueue's quota
+# check passes, so it admits; kube-scheduler can't place the gang, so the pods stay pending and hold
+# quota until Kueue's waitForPodsReady timeout evicts them.
+apiVersion: grove.io/v1alpha1
+kind: PodCliqueSet
+metadata:
+  name: poc-was-cannot
+  namespace: default
+  labels: {kueue.x-k8s.io/queue-name: poc-quota}
+spec:
+  replicas: 1
+  template:
+    topologyConstraint: {topologyName: poc-topology, pack: {required: rack}}
+    cliques:
+    - name: prefill
+      spec:
+        roleName: prefill
+        replicas: 3
+        minAvailable: 3
+        podSpec: &podSpec
+          schedulerName: kueue
+          terminationGracePeriodSeconds: 1
+          tolerations: [{key: poc.grove.io/was, operator: Exists, effect: NoSchedule}]
+          containers: [{name: main, image: busybox, resources: {requests: {cpu: "3", memory: 1Gi}}}]
+    - name: decode
+      spec:
+        roleName: decode
+        replicas: 3
+        minAvailable: 3
+        podSpec: *podSpec

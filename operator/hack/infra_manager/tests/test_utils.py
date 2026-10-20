@@ -72,3 +72,20 @@ def test_collect_grove_helm_overrides_kueue():
         ("--set", "config.scheduler.profiles[1].name=kai-scheduler"),
         ("--set", "config.scheduler.profiles[2].name=kueue"),
     ]
+
+
+def test_collect_grove_helm_overrides_kueue_and_was():
+    """With both enabled (POC), the kueue profile builds the WAS hierarchy."""
+    overrides = collect_grove_helm_overrides(GroveConfig(), kueue_enabled=True, was_enabled=True)
+    profiles = [
+        json.loads(value.split("=", 1)[1])
+        for flag, value in overrides
+        if flag == "--set-json" and value.startswith("config.scheduler.profiles=")
+    ]
+    assert profiles == [[
+        {"name": "default-scheduler"},
+        {"name": "kai-scheduler"},
+        {"name": "kueue", "config": {"wasMode": "GangOnly"}},
+    ]]
+    assert ("--set", "config.topologyAwareScheduling.enabled=true") in overrides
+    assert not any("defaultProfileName" in value for _, value in overrides)

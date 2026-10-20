@@ -29,6 +29,7 @@ import (
 	configv1alpha1 "github.com/ai-dynamo/grove/operator/api/config/v1alpha1"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/scheduler"
+	"github.com/ai-dynamo/grove/operator/internal/scheduler/kube"
 	componentutils "github.com/ai-dynamo/grove/operator/internal/utils/component"
 
 	groveschedulerv1alpha1 "github.com/ai-dynamo/grove/scheduler/api/core/v1alpha1"
@@ -59,6 +60,12 @@ const (
 	// maxWorkloadPodSets is the maxItems of a Workload's spec.podSets in Kueue v0.20.1, the version this backend
 	// supports (v0.17 caps it at 8).
 	maxWorkloadPodSets = 18
+
+	// WASMode values (POC). GangOnly leaves topology to Kueue's TAS, Full gives it to both Kueue's TAS and
+	// kube-scheduler, and WASTopology gives it to kube-scheduler only.
+	wasModeGangOnly    = "GangOnly"
+	wasModeFull        = "Full"
+	wasModeWASTopology = "WASTopology"
 )
 
 type resolvedTopologyRequest struct {
@@ -74,6 +81,8 @@ type schedulerBackend struct {
 	eventRecorder record.EventRecorder
 	profile       configv1alpha1.SchedulerProfile
 	config        configv1alpha1.KueueSchedulerConfiguration
+	// was maintains each PodGang's WAS hierarchy when config.WASMode is set (POC).
+	was scheduler.Backend
 }
 
 var (
@@ -115,7 +124,50 @@ func (b *schedulerBackend) Init(directClient client.Client) error {
 		return fmt.Errorf("failed to unmarshal kueue scheduler config: %w", err)
 	}
 	b.config = withDefaults(b.config)
+	return b.initWAS(directClient)
+}
+
+// initWAS reuses the default-scheduler backend to build each PodGang's WAS hierarchy (POC).
+func (b *schedulerBackend) initWAS(directClient client.Client) error {
+	switch b.config.WASMode {
+	case "":
+		return nil
+	case wasModeGangOnly, wasModeFull, wasModeWASTopology:
+	default:
+		return fmt.Errorf("unsupported kueue wasMode %q, want %q, %q or %q", b.config.WASMode, wasModeGangOnly, wasModeFull, wasModeWASTopology)
+	}
+	if b.config.UnderlyingSchedulerName != string(configv1alpha1.SchedulerNameKube) {
+		return fmt.Errorf("kueue wasMode requires underlyingSchedulerName %q, got %q", configv1alpha1.SchedulerNameKube, b.config.UnderlyingSchedulerName)
+	}
+	if directClient == nil {
+		directClient = b.client
+	}
+	was := kube.New(b.client, b.scheme, b.eventRecorder, configv1alpha1.SchedulerProfile{
+		Name:   configv1alpha1.SchedulerNameKube,
+		Config: &runtime.RawExtension{Raw: []byte(`{"gangScheduling":true}`)},
+	})
+	if err := was.Init(directClient); err != nil {
+		return err
+	}
+	b.was = was
 	return nil
+}
+
+// wasPodGang returns the PodGang the WAS hierarchy is built from. GangOnly drops every topology constraint
+// so the hierarchy only adds bind-time gangs on top of Kueue's TAS placement.
+func (b *schedulerBackend) wasPodGang(podGang *groveschedulerv1alpha1.PodGang) *groveschedulerv1alpha1.PodGang {
+	if b.config.WASMode != wasModeGangOnly {
+		return podGang
+	}
+	gangOnly := podGang.DeepCopy()
+	gangOnly.Spec.TopologyConstraint = nil
+	for i := range gangOnly.Spec.TopologyConstraintGroupConfigs {
+		gangOnly.Spec.TopologyConstraintGroupConfigs[i].TopologyConstraint = nil
+	}
+	for i := range gangOnly.Spec.PodGroups {
+		gangOnly.Spec.PodGroups[i].TopologyConstraint = nil
+	}
+	return gangOnly
 }
 
 // SyncPodGang builds a prebuilt Kueue Workload for every PodGang, mapping each PodGroup to a Kueue podSet.
@@ -128,6 +180,11 @@ func (b *schedulerBackend) SyncPodGang(ctx context.Context, podGang *groveschedu
 	pcsName := podGang.Labels[apicommon.LabelPartOfKey]
 	if pcsName == "" {
 		return fmt.Errorf("PodGang %s/%s must set label %q", podGang.Namespace, podGang.Name, apicommon.LabelPartOfKey)
+	}
+	if b.was != nil {
+		if err := b.was.SyncPodGang(ctx, b.wasPodGang(podGang)); err != nil {
+			return err
+		}
 	}
 	return b.ensureWorkload(ctx, podGang, pcsName, b.client)
 }
@@ -395,6 +452,10 @@ func (b *schedulerBackend) PreparePod(pod *corev1.Pod) error {
 			}
 		}
 	}
+	if b.was != nil {
+		// Points spec.schedulingGroup at the clique's leaf PodGroup in the PodGang's hierarchy.
+		return b.was.PreparePod(pod)
+	}
 	return nil
 }
 
@@ -418,6 +479,10 @@ func (b *schedulerBackend) IsPodFinalized(pod *corev1.Pod) bool {
 }
 
 func (b *schedulerBackend) topologyRequestForPodGroup(podGang *groveschedulerv1alpha1.PodGang, podGroupName string) *resolvedTopologyRequest {
+	if b.config.WASMode == wasModeWASTopology {
+		// kube-scheduler alone enforces the PodGang's topology; Kueue only checks quota on a non-TAS queue.
+		return nil
+	}
 	requiredKey := scheduler.RequiredTopologyKeyForPodGroup(podGang, podGroupName, "")
 	preferredKey := scheduler.PreferredTopologyKeyForPodGroup(podGang, podGroupName)
 	if requiredKey == "" && preferredKey == "" {
@@ -454,7 +519,7 @@ func (b *schedulerBackend) podGangTotalPodCount(ctx context.Context, pcs *grovec
 // Workload to set minCount, so at most one standalone PodClique may declare partial-gang
 // (minAvailable < replicas) semantics. The PodCliques that belong to a PodCliqueScalingGroup are
 // always all-or-nothing and must not declare minAvailable < replicas.
-func (b *schedulerBackend) ValidatePodCliqueSet(_ context.Context, pcs *grovecorev1alpha1.PodCliqueSet, opts ...scheduler.ValidateOption) error {
+func (b *schedulerBackend) ValidatePodCliqueSet(ctx context.Context, pcs *grovecorev1alpha1.PodCliqueSet, opts ...scheduler.ValidateOption) error {
 	queueName, err := queueNameForPodCliqueSet(pcs)
 	if err != nil {
 		return err
@@ -538,6 +603,9 @@ func (b *schedulerBackend) ValidatePodCliqueSet(_ context.Context, pcs *grovecor
 	}
 	if len(bothRequiredAndPreferredCliques) > 0 {
 		return fmt.Errorf("kueue backend does not support a PodClique resolving both a required and a preferred topology domain because Kueue rejects a pod with more than one topology annotation, but the following resolve both: %s", strings.Join(bothRequiredAndPreferredCliques, ", "))
+	}
+	if b.was != nil {
+		return b.was.ValidatePodCliqueSet(ctx, pcs, opts...)
 	}
 	return nil
 }

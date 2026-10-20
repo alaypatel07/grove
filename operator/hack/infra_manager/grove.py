@@ -213,7 +213,6 @@ def deploy_grove_operator(
 
     Raises:
         NotImplementedError: If grove_cfg.mode is not "local".
-        ValueError: If WAS and Kueue are both enabled in this test setup.
     """
     if grove_cfg.mode != "local":
         raise NotImplementedError(f"Grove deploy mode {grove_cfg.mode!r} is not yet implemented")

@@ -1,0 +1,149 @@
+# POC fixtures for Grove's kueue backend plus Workload-Aware Scheduling (WAS) objects.
+#
+# KWOK nodes in three racks; each node fits one POC pod (4 CPU per node, 3 CPU per pod):
+#   poc-rack-big     poc-big-1..4     set=pick    4 pod slots
+#   poc-rack-small   poc-small-1..2   set=pick    2 pod slots
+#   poc-rack-atomic  poc-atomic-1..2  set=atomic  2 pod slots
+# Queues, in namespace default (the only namespace the e2e Kueue install manages):
+#   poc-tas         TAS flavor over set=pick: Kueue's TAS pins every pod to a node
+#   poc-tas-atomic  TAS flavor over set=atomic
+#   poc-quota       non-TAS flavor over set=pick: Kueue only checks quota
+apiVersion: grove.io/v1alpha1
+kind: ClusterTopologyBinding
+metadata:
+  name: poc-topology
+spec:
+  levels:
+  - {domain: zone, key: kubernetes.io/zone}
+  - {domain: block, key: kubernetes.io/block}
+  - {domain: rack, key: kubernetes.io/rack}
+  - {domain: host, key: kubernetes.io/hostname}
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: poc-big-1
+  annotations: {kwok.x-k8s.io/node: fake, node.alpha.kubernetes.io/ttl: "0"}
+  labels: {kubernetes.io/hostname: poc-big-1, kubernetes.io/rack: poc-rack-big, kubernetes.io/block: poc-block, kubernetes.io/zone: poc-zone, poc.grove.io/set: pick, type: kwok-poc}
+spec: {taints: [{key: poc.grove.io/was, value: "true", effect: NoSchedule}]}
+status: {capacity: {cpu: "4", memory: 16Gi, pods: "110"}, allocatable: {cpu: "4", memory: 16Gi, pods: "110"}, conditions: [{type: Ready, status: "True", reason: KubeletReady, message: kubelet is posting ready status}]}
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: poc-big-2
+  annotations: {kwok.x-k8s.io/node: fake, node.alpha.kubernetes.io/ttl: "0"}
+  labels: {kubernetes.io/hostname: poc-big-2, kubernetes.io/rack: poc-rack-big, kubernetes.io/block: poc-block, kubernetes.io/zone: poc-zone, poc.grove.io/set: pick, type: kwok-poc}
+spec: {taints: [{key: poc.grove.io/was, value: "true", effect: NoSchedule}]}
+status: {capacity: {cpu: "4", memory: 16Gi, pods: "110"}, allocatable: {cpu: "4", memory: 16Gi, pods: "110"}, conditions: [{type: Ready, status: "True", reason: KubeletReady, message: kubelet is posting ready status}]}
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: poc-big-3
+  annotations: {kwok.x-k8s.io/node: fake, node.alpha.kubernetes.io/ttl: "0"}
+  labels: {kubernetes.io/hostname: poc-big-3, kubernetes.io/rack: poc-rack-big, kubernetes.io/block: poc-block, kubernetes.io/zone: poc-zone, poc.grove.io/set: pick, type: kwok-poc}
+spec: {taints: [{key: poc.grove.io/was, value: "true", effect: NoSchedule}]}
+status: {capacity: {cpu: "4", memory: 16Gi, pods: "110"}, allocatable: {cpu: "4", memory: 16Gi, pods: "110"}, conditions: [{type: Ready, status: "True", reason: KubeletReady, message: kubelet is posting ready status}]}
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: poc-big-4
+  annotations: {kwok.x-k8s.io/node: fake, node.alpha.kubernetes.io/ttl: "0"}
+  labels: {kubernetes.io/hostname: poc-big-4, kubernetes.io/rack: poc-rack-big, kubernetes.io/block: poc-block, kubernetes.io/zone: poc-zone, poc.grove.io/set: pick, type: kwok-poc}
+spec: {taints: [{key: poc.grove.io/was, value: "true", effect: NoSchedule}]}
+status: {capacity: {cpu: "4", memory: 16Gi, pods: "110"}, allocatable: {cpu: "4", memory: 16Gi, pods: "110"}, conditions: [{type: Ready, status: "True", reason: KubeletReady, message: kubelet is posting ready status}]}
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: poc-small-1
+  annotations: {kwok.x-k8s.io/node: fake, node.alpha.kubernetes.io/ttl: "0"}
+  labels: {kubernetes.io/hostname: poc-small-1, kubernetes.io/rack: poc-rack-small, kubernetes.io/block: poc-block, kubernetes.io/zone: poc-zone, poc.grove.io/set: pick, type: kwok-poc}
+spec: {taints: [{key: poc.grove.io/was, value: "true", effect: NoSchedule}]}
+status: {capacity: {cpu: "4", memory: 16Gi, pods: "110"}, allocatable: {cpu: "4", memory: 16Gi, pods: "110"}, conditions: [{type: Ready, status: "True", reason: KubeletReady, message: kubelet is posting ready status}]}
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: poc-small-2
+  annotations: {kwok.x-k8s.io/node: fake, node.alpha.kubernetes.io/ttl: "0"}
+  labels: {kubernetes.io/hostname: poc-small-2, kubernetes.io/rack: poc-rack-small, kubernetes.io/block: poc-block, kubernetes.io/zone: poc-zone, poc.grove.io/set: pick, type: kwok-poc}
+spec: {taints: [{key: poc.grove.io/was, value: "true", effect: NoSchedule}]}
+status: {capacity: {cpu: "4", memory: 16Gi, pods: "110"}, allocatable: {cpu: "4", memory: 16Gi, pods: "110"}, conditions: [{type: Ready, status: "True", reason: KubeletReady, message: kubelet is posting ready status}]}
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: poc-atomic-1
+  annotations: {kwok.x-k8s.io/node: fake, node.alpha.kubernetes.io/ttl: "0"}
+  labels: {kubernetes.io/hostname: poc-atomic-1, kubernetes.io/rack: poc-rack-atomic, kubernetes.io/block: poc-block, kubernetes.io/zone: poc-zone, poc.grove.io/set: atomic, type: kwok-poc}
+spec: {taints: [{key: poc.grove.io/was, value: "true", effect: NoSchedule}]}
+status: {capacity: {cpu: "4", memory: 16Gi, pods: "110"}, allocatable: {cpu: "4", memory: 16Gi, pods: "110"}, conditions: [{type: Ready, status: "True", reason: KubeletReady, message: kubelet is posting ready status}]}
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: poc-atomic-2
+  annotations: {kwok.x-k8s.io/node: fake, node.alpha.kubernetes.io/ttl: "0"}
+  labels: {kubernetes.io/hostname: poc-atomic-2, kubernetes.io/rack: poc-rack-atomic, kubernetes.io/block: poc-block, kubernetes.io/zone: poc-zone, poc.grove.io/set: atomic, type: kwok-poc}
+spec: {taints: [{key: poc.grove.io/was, value: "true", effect: NoSchedule}]}
+status: {capacity: {cpu: "4", memory: 16Gi, pods: "110"}, allocatable: {cpu: "4", memory: 16Gi, pods: "110"}, conditions: [{type: Ready, status: "True", reason: KubeletReady, message: kubelet is posting ready status}]}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata: {name: poc-tas}
+spec: {nodeLabels: {poc.grove.io/set: pick}, topologyName: poc-topology}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata: {name: poc-tas-atomic}
+spec: {nodeLabels: {poc.grove.io/set: atomic}, topologyName: poc-topology}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata: {name: poc-quota}
+spec: {nodeLabels: {poc.grove.io/set: pick}}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata: {name: poc-tas}
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors: [{name: poc-tas, resources: [{name: cpu, nominalQuota: "100"}, {name: memory, nominalQuota: 100Gi}]}]
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata: {name: poc-tas-atomic}
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors: [{name: poc-tas-atomic, resources: [{name: cpu, nominalQuota: "100"}, {name: memory, nominalQuota: 100Gi}]}]
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata: {name: poc-quota}
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors: [{name: poc-quota, resources: [{name: cpu, nominalQuota: "100"}, {name: memory, nominalQuota: 100Gi}]}]
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata: {name: poc-tas, namespace: default}
+spec: {clusterQueue: poc-tas}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata: {name: poc-tas-atomic, namespace: default}
+spec: {clusterQueue: poc-tas-atomic}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata: {name: poc-quota, namespace: default}
+spec: {clusterQueue: poc-quota}

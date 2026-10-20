@@ -80,20 +80,15 @@ def collect_grove_helm_overrides(
             kai-scheduler (always on in charts/values.yaml), kueue is opt-in. Since helm --set
             on a list index replaces the whole array rather than merging it, every existing
             profile entry is re-set alongside kueue's, not just the new one.
-        was_enabled: Enable native gang scheduling and make it the default profile.
+        was_enabled: Enable native gang scheduling and make it the default profile. With Kueue
+            also enabled (POC), the kueue profile builds the WAS hierarchy instead (wasMode GangOnly).
 
     Returns:
         List of ``(helm_flag, "key=value")`` tuples.
         When profiling is enabled, Grafana/Pyroscope pod annotation overrides
         are also appended using ``--set-string`` to prevent helm from coercing
         annotation values to booleans or integers.
-
-    Raises:
-        ValueError: If WAS and Kueue are both enabled in this test setup.
     """
-    if was_enabled and kueue_enabled:
-        raise ValueError("WAS and Kueue cannot both be enabled in this test setup")
-
     overrides: list[tuple[bool, str, str]] = [
         (cfg.profiling, HELM_KEY_PROFILING, "true"),
         (cfg.profiling, HELM_KEY_PPROF_BIND_HOST, DEFAULT_PPROF_BIND_HOST),
@@ -105,9 +100,19 @@ def collect_grove_helm_overrides(
         (cfg.burst is not None, HELM_KEY_BURST, str(cfg.burst)),
     ]
     result: list[tuple[str, str]] = [("--set", f"{key}={value}") for enabled, key, value in overrides if enabled]
-    if kueue_enabled:
+    if kueue_enabled and was_enabled:
+        profiles = [
+            {"name": "default-scheduler"},
+            {"name": "kai-scheduler"},
+            {"name": "kueue", "config": {"wasMode": "GangOnly"}},
+        ]
+        result.extend([
+            ("--set-json", f"config.scheduler.profiles={json.dumps(profiles)}"),
+            ("--set", "config.topologyAwareScheduling.enabled=true"),
+        ])
+    elif kueue_enabled:
         result.extend(("--set", kv) for kv in HELM_KEY_SCHEDULER_PROFILES_WITH_KUEUE)
-    if was_enabled:
+    elif was_enabled:
         profiles = [{"name": "default-scheduler", "config": {"gangScheduling": True}}]
         result.extend([
             ("--set-json", f"config.scheduler.profiles={json.dumps(profiles)}"),

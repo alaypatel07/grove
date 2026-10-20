@@ -1,0 +1,35 @@
+# Run with wasMode Off, then GangOnly. A pod outside Kueue holds hostPort 9000 on poc-atomic-1.
+# Kueue's TAS doesn't check host ports, so it pins one worker to each atomic node.
+# Off: the worker on poc-atomic-2 binds and the one on poc-atomic-1 can't (a partially bound gang).
+# GangOnly: the leaf PodGroup needs both workers, so neither binds.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: poc-port-holder
+  namespace: default
+spec:
+  nodeName: poc-atomic-1
+  terminationGracePeriodSeconds: 1
+  tolerations: [{key: poc.grove.io/was, operator: Exists, effect: NoSchedule}]
+  containers: [{name: main, image: busybox, ports: [{containerPort: 9000, hostPort: 9000}], resources: {requests: {cpu: 100m}}}]
+---
+apiVersion: grove.io/v1alpha1
+kind: PodCliqueSet
+metadata:
+  name: poc-atomic
+  namespace: default
+  labels: {kueue.x-k8s.io/queue-name: poc-tas-atomic}
+spec:
+  replicas: 1
+  template:
+    cliques:
+    - name: worker
+      spec:
+        roleName: worker
+        replicas: 2
+        minAvailable: 2
+        podSpec:
+          schedulerName: kueue
+          terminationGracePeriodSeconds: 1
+          tolerations: [{key: poc.grove.io/was, operator: Exists, effect: NoSchedule}]
+          containers: [{name: main, image: busybox, ports: [{containerPort: 9000, hostPort: 9000}], resources: {requests: {cpu: "3", memory: 1Gi}}}]

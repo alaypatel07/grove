@@ -1,0 +1,32 @@
+# Run with wasMode Off, GangOnly and Full. Two cliques and a rack required for the whole PodCliqueSet.
+# poc-rack-big fits all 4 pods, but the kueue backend gives each PodSet its own required rack and
+# Kueue's TAS places PodSets one at a time with best fit: decode (first by name) takes poc-rack-small,
+# so prefill lands in poc-rack-big. Off and GangOnly: the pods bind across two racks. Full: the WAS
+# root CompositePodGroup needs one rack and can't move the pinned pods, so nothing binds.
+apiVersion: grove.io/v1alpha1
+kind: PodCliqueSet
+metadata:
+  name: poc-split
+  namespace: default
+  labels: {kueue.x-k8s.io/queue-name: poc-tas}
+spec:
+  replicas: 1
+  template:
+    topologyConstraint: {topologyName: poc-topology, pack: {required: rack}}
+    cliques:
+    - name: prefill
+      spec:
+        roleName: prefill
+        replicas: 2
+        minAvailable: 2
+        podSpec: &podSpec
+          schedulerName: kueue
+          terminationGracePeriodSeconds: 1
+          tolerations: [{key: poc.grove.io/was, operator: Exists, effect: NoSchedule}]
+          containers: [{name: main, image: busybox, resources: {requests: {cpu: "3", memory: 1Gi}}}]
+    - name: decode
+      spec:
+        roleName: decode
+        replicas: 2
+        minAvailable: 2
+        podSpec: *podSpec

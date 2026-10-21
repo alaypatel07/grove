@@ -47,30 +47,43 @@ mode() {
   kubectl -n "$GROVE_NS" rollout status deployment --timeout=5m
 }
 
-show() {
-  local pcs="poc-$1" gang="poc-$1-0"
-  echo "--- Kueue Workload $gang"
-  kubectl -n default get workloads.kueue.x-k8s.io "$gang" \
-    -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}' || true
-  kubectl -n default get events --field-selector "involvedObject.kind=Workload,involvedObject.name=$gang" \
-    --sort-by=.lastTimestamp -o custom-columns='COUNT:.count,REASON:.reason,MESSAGE:.message' || true
+pods() {
   echo "--- Pods (KUEUE_PIN = node Kueue's TAS chose, NODE = node kube-scheduler bound)"
-  kubectl -n default get pods -l "app.kubernetes.io/part-of=$pcs" -o custom-columns='POD:.metadata.name,KUEUE_PIN:.spec.nodeSelector.kubernetes\.io/hostname,NODE:.spec.nodeName,PHASE:.status.phase,GATES:.spec.schedulingGates[*].name,PODGROUP:.spec.schedulingGroup.podGroupName'
-  echo "--- WAS objects"
-  kubectl -n default get compositepodgroups.scheduling.k8s.io -l "grove.io/podgang=$gang" \
-    -o custom-columns='COMPOSITE:.metadata.name,MIN_GROUPS:.spec.schedulingPolicy.gang.minGroupCount,TOPOLOGY:.spec.schedulingConstraints.topology[*].key,CONDITIONS:.status.conditions[*].type,STATUS:.status.conditions[*].status,REASON:.status.conditions[*].reason' 2>/dev/null || true
-  kubectl -n default get podgroups.scheduling.k8s.io -l "grove.io/podgang=$gang" \
-    -o custom-columns='PODGROUP:.metadata.name,CLIQUE:.metadata.labels.grove\.io/podclique,MIN:.spec.schedulingPolicy.gang.minCount,TOPOLOGY:.spec.schedulingConstraints.topology[*].key,SCHEDULED:.status.conditions[?(@.type=="PodGroupInitiallyScheduled")].status,REASON:.status.conditions[?(@.type=="PodGroupInitiallyScheduled")].reason' 2>/dev/null || true
+  kubectl -n default get pods -l "app.kubernetes.io/part-of=poc-$1" -o custom-columns='POD:.metadata.name,KUEUE_PIN:.spec.nodeSelector.kubernetes\.io/hostname,NODE:.spec.nodeName,PHASE:.status.phase,GATES:.spec.schedulingGates[*].name,PODGROUP:.spec.schedulingGroup.podGroupName'
+}
+
+show() {
+  local pcs="poc-$1" gang
+  # The Kueue Workload is named after the PodGang and the WAS objects are labeled with it. PodGang
+  # names carry an epoch (<pcs>-<replica>-<epoch>), so look them up.
+  for gang in $(kubectl -n default get podgangs.scheduler.grove.io -l "app.kubernetes.io/part-of=$pcs" -o jsonpath='{.items[*].metadata.name}'); do
+    echo "--- Kueue Workload $gang"
+    kubectl -n default get workloads.kueue.x-k8s.io "$gang" \
+      -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}' || true
+    kubectl -n default get events --field-selector "involvedObject.kind=Workload,involvedObject.name=$gang" \
+      --sort-by=.lastTimestamp -o custom-columns='LAST:.lastTimestamp,COUNT:.count,REASON:.reason,MESSAGE:.message' || true
+    echo "--- WAS objects of $gang"
+    kubectl -n default get compositepodgroups.scheduling.k8s.io -l "grove.io/podgang=$gang" \
+      -o custom-columns='COMPOSITE:.metadata.name,MIN_GROUPS:.spec.schedulingPolicy.gang.minGroupCount,TOPOLOGY:.spec.schedulingConstraints.topology[*].key,CONDITIONS:.status.conditions[*].type,STATUS:.status.conditions[*].status,REASON:.status.conditions[*].reason' || true
+    kubectl -n default get podgroups.scheduling.k8s.io -l "grove.io/podgang=$gang" \
+      -o custom-columns='PODGROUP:.metadata.name,CLIQUE:.metadata.labels.grove\.io/podclique,MIN:.spec.schedulingPolicy.gang.minCount,TOPOLOGY:.spec.schedulingConstraints.topology[*].key,SCHEDULED:.status.conditions[?(@.type=="PodGroupInitiallyScheduled")].status,REASON:.status.conditions[?(@.type=="PodGroupInitiallyScheduled")].reason' || true
+  done
+  pods "$1"
   echo "--- Latest FailedScheduling events"
   kubectl -n default get events --field-selector reason=FailedScheduling --sort-by=.lastTimestamp \
-    -o custom-columns='POD:.involvedObject.name,MESSAGE:.message' | grep "^$pcs" | tail -4 || true
+    -o custom-columns='LAST:.lastTimestamp,POD:.involvedObject.name,MESSAGE:.message' | grep " $pcs-" | tail -4 || true
 }
 
 run() {
   [ -f "scenarios/$1.yaml" ] || usage
   echo "### scenario $1"
+  # Start from no events, so earlier runs' FailedScheduling events don't mix in.
+  kubectl -n default delete events --all >/dev/null
   kubectl apply -f "scenarios/$1.yaml"
-  sleep "$WAIT"
+  # Kueue's waitForPodsReady evicts after 15s and deletes the pods, so record the pins before that.
+  sleep 10
+  pods "$1"
+  sleep "$((WAIT - 10))"
   show "$1"
 }
 

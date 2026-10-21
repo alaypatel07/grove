@@ -101,9 +101,10 @@ def collect_grove_helm_overrides(
     ]
     result: list[tuple[str, str]] = [("--set", f"{key}={value}") for enabled, key, value in overrides if enabled]
     if kueue_enabled and was_enabled:
+        # No kai-scheduler profile: the POC runs without KAI, and the KAI backend fails the
+        # operator's startup topology sync once a ClusterTopologyBinding exists.
         profiles = [
             {"name": "default-scheduler"},
-            {"name": "kai-scheduler"},
             {"name": "kueue", "config": {"wasMode": "GangOnly"}},
         ]
         result.extend([

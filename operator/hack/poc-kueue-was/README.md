@@ -13,16 +13,20 @@ clique's PodGroup. The `wasMode` field of the kueue scheduler profile selects wh
 
 ## Cluster
 
-WAS needs Kubernetes 1.37 with alpha feature gates set when the cluster is created. From `operator/`:
+WAS needs Kubernetes 1.37 with alpha feature gates set when the cluster is created. Use Helm 3: Helm 4's
+server-side apply conflicts with the operator over the webhook cert Secret. From `operator/`:
 
 ```bash
 export E2E_SCHEDULER__KUEUE__ENABLED=true E2E_SCHEDULER__KAI__ENABLED=false
-export E2E_CLUSTER__WAS_ENABLED=true E2E_CLUSTER__WORKER_NODES=2 E2E_KWOK__NODES=2
+export E2E_CLUSTER__WAS_ENABLED=true E2E_CLUSTER__WORKER_NODES=1 E2E_KWOK__NODES=2
+export E2E_CLUSTER__WORKER_MEMORY=1g
 make e2e-cluster-up
 ```
 
 This replaces any existing `shared-e2e-test-cluster`. With both Kueue and WAS enabled, setup registers the
-kueue profile with `wasMode: GangOnly`.
+kueue profile with `wasMode: GangOnly` and no kai-scheduler profile. The POC schedules nothing on the k3d
+agents, so one is enough. It also gets 1g instead of the default 150m, which can OOM-kill k3s at startup.
+If an agent still crash-loops, check `sysctl fs.inotify.max_user_instances`; 128 is too low.
 
 ## Run
 

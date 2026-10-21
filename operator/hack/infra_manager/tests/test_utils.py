@@ -84,7 +84,6 @@ def test_collect_grove_helm_overrides_kueue_and_was():
     ]
     assert profiles == [[
         {"name": "default-scheduler"},
-        {"name": "kai-scheduler"},
         {"name": "kueue", "config": {"wasMode": "GangOnly"}},
     ]]
     assert ("--set", "config.topologyAwareScheduling.enabled=true") in overrides

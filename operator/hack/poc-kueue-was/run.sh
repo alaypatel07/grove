@@ -5,7 +5,9 @@ cd "$(dirname "$0")"
 
 GROVE_NS=grove-system
 WAIT=${WAIT:-45}
-PROFILES_PREFIX='[{"name":"default-scheduler"},{"name":"kai-scheduler"},{"name":"kueue"'
+# No kai-scheduler profile: KAI isn't installed, and its backend fails the operator's startup
+# topology sync once poc-topology exists.
+PROFILES_PREFIX='[{"name":"default-scheduler"},{"name":"kueue"'
 
 usage() {
   cat <<'EOF'

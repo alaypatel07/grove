@@ -86,5 +86,5 @@ def test_collect_grove_helm_overrides_kueue_and_was():
         {"name": "default-scheduler"},
         {"name": "kueue", "config": {"wasMode": "GangOnly"}},
     ]]
+    assert ("--set", "config.scheduler.defaultProfileName=default-scheduler") in overrides
     assert ("--set", "config.topologyAwareScheduling.enabled=true") in overrides
-    assert not any("defaultProfileName" in value for _, value in overrides)

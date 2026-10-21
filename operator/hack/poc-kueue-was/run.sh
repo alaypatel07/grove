@@ -5,8 +5,8 @@ cd "$(dirname "$0")"
 
 GROVE_NS=grove-system
 WAIT=${WAIT:-45}
-# No kai-scheduler profile: KAI isn't installed, and its backend fails the operator's startup
-# topology sync once poc-topology exists.
+# No kai-scheduler profile (KAI isn't installed, and its backend fails the operator's startup topology
+# sync once poc-topology exists), so mode() also replaces the e2e default profile, kai-scheduler.
 PROFILES_PREFIX='[{"name":"default-scheduler"},{"name":"kueue"'
 
 usage() {
@@ -41,7 +41,8 @@ mode() {
     *) usage ;;
   esac
   echo "### wasMode=$1"
-  helm upgrade grove-operator ../../charts -n "$GROVE_NS" --reuse-values --set-json "config.scheduler.profiles=$profiles" >/dev/null
+  helm upgrade grove-operator ../../charts -n "$GROVE_NS" --reuse-values --set-json "config.scheduler.profiles=$profiles" \
+    --set config.scheduler.defaultProfileName=default-scheduler >/dev/null
   kubectl -n "$GROVE_NS" rollout restart deployment >/dev/null
   kubectl -n "$GROVE_NS" rollout status deployment --timeout=5m
 }
